@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/aeden/traceroute"
+	"github.com/datastream/traceroute"
 	"net"
 )
 
@@ -27,12 +27,14 @@ func address(address [4]byte) string {
 func main() {
 	var m = flag.Int("m", traceroute.DEFAULT_MAX_HOPS, `Set the max time-to-live (max number of hops) used in outgoing probe packets (default is 64)`)
 	var q = flag.Int("q", 1, `Set the number of probes per "ttl" to nqueries (default is one probe).`)
+	var i = flag.String("i", "",`Set Outgo ip`)
 
 	flag.Parse()
 	host := flag.Arg(0)
 	options := traceroute.TracerouteOptions{}
 	options.SetRetries(*q - 1)
 	options.SetMaxHops(*m + 1)
+	options.SetOutGo(*i)
 
 	ipAddr, err := net.ResolveIPAddr("ip", host)
 	if err != nil {

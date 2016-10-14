@@ -18,22 +18,25 @@ const DEFAULT_PACKET_SIZE = 52
 
 // Return the first non-loopback address as a 4 byte IP address. This address
 // is used for sending packets out.
-func socketAddr() (addr [4]byte, err error) {
+func socketAddr() ([][4]byte, error) {
 	addrs, err := net.InterfaceAddrs()
+	var addrList [][4]byte
+	var addr [4]byte
 	if err != nil {
-		return
+		return addrList, err
 	}
-
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			if len(ipnet.IP.To4()) == net.IPv4len {
 				copy(addr[:], ipnet.IP.To4())
-				return
+				addrList = append(addrList, addr)
 			}
 		}
 	}
-	err = errors.New("You do not appear to be connected to the Internet")
-	return
+	if len(addrList) == 0 {
+		err = errors.New("You do not appear to be connected to the Internet")
+	}
+	return addrList, err
 }
 
 // Given a host name convert it to a 4 byte IP address.
@@ -54,6 +57,7 @@ func destAddr(dest string) (destAddr [4]byte, err error) {
 
 // TracrouteOptions type
 type TracerouteOptions struct {
+	ip         [4]byte
 	port       int
 	maxHops    int
 	timeoutMs  int
@@ -81,6 +85,16 @@ func (options *TracerouteOptions) MaxHops() int {
 
 func (options *TracerouteOptions) SetMaxHops(maxHops int) {
 	options.maxHops = maxHops
+}
+
+func (options *TracerouteOptions) SetOutGo(ip string) {
+	if ipadd := net.ParseIP(ip); ipadd != nil {
+		if len(ipadd.To4()) == net.IPv4len {
+			var addr [4]byte
+			copy(addr[:], ipadd.To4())
+			options.ip = addr
+		}
+	}
 }
 
 func (options *TracerouteOptions) TimeoutMs() int {
@@ -167,11 +181,18 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 	result.Hops = []TracerouteHop{}
 	destAddr, err := destAddr(dest)
 	result.DestinationAddress = destAddr
-	socketAddr, err := socketAddr()
+	addrList, err := socketAddr()
 	if err != nil {
 		return
 	}
-
+	socketAddr := addrList[0]
+	if options.ip[0] != byte(0) {
+		for _, addr := range addrList {
+			if addr ==  options.ip {
+				socketAddr = addr
+			}
+		}
+	}
 	timeoutMs := (int64)(options.TimeoutMs())
 	tv := syscall.NsecToTimeval(1000 * 1000 * timeoutMs)
 
