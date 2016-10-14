@@ -3,8 +3,11 @@
 package traceroute
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"golang.org/x/net/ipv4"
 	"net"
 	"syscall"
 	"time"
@@ -15,6 +18,14 @@ const DEFAULT_MAX_HOPS = 64
 const DEFAULT_TIMEOUT_MS = 500
 const DEFAULT_RETRIES = 3
 const DEFAULT_PACKET_SIZE = 52
+const UDP_HEADER_LEN = 8
+
+type UdpHeader struct {
+	SourcePort      uint16
+	DestinationPort uint16
+	Length          uint16
+	Checksum        uint16
+}
 
 // Return the first non-loopback address as a 4 byte IP address. This address
 // is used for sending packets out.
@@ -188,7 +199,7 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 	socketAddr := addrList[0]
 	if options.ip[0] != byte(0) {
 		for _, addr := range addrList {
-			if addr ==  options.ip {
+			if addr == options.ip {
 				socketAddr = addr
 			}
 		}
@@ -209,12 +220,13 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 		}
 
 		// Set up the socket to send packets out.
-		sendSocket, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
+		sendSocket, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
 		if err != nil {
 			return result, err
 		}
 		// This sets the current hop TTL
-		syscall.SetsockoptInt(sendSocket, 0x0, syscall.IP_TTL, ttl)
+		syscall.SetsockoptInt(sendSocket, syscall.IPPROTO_IP, syscall.IP_HDRINCL, ttl)
+		//syscall.SetsockoptInt(sendSocket, 0x0, syscall.IP_TTL, ttl)
 		// This sets the timeout to wait for a response from the remote host
 		syscall.SetsockoptTimeval(recvSocket, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 
@@ -223,9 +235,36 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 
 		// Bind to the local socket to listen for ICMP packets
 		syscall.Bind(recvSocket, &syscall.SockaddrInet4{Port: options.Port(), Addr: socketAddr})
-
+		data := []byte("00000000000000000000000")
+		udpHeader_t := UdpHeader{
+			SourcePort:      1,
+			DestinationPort: 34567,
+			Length:          uint16(UDP_HEADER_LEN + len(data)),
+		}
+		buf := bytes.NewBuffer([]byte{})
+		err = binary.Write(buf, binary.BigEndian, &udpHeader_t)
+		if err != nil {
+			return result, err
+		}
+		udpHeader := buf.Bytes()
+		dataWithHeader := append(udpHeader, data...)
+		h := &ipv4.Header{
+			Version:  ipv4.Version,
+			Len:      ipv4.HeaderLen,
+			TotalLen: ipv4.HeaderLen + UDP_HEADER_LEN + len(data),
+			ID:       12345,
+			Protocol: 17,
+			TTL:      ttl,
+			Dst:      net.IPv4(destAddr[0], destAddr[1], destAddr[2], destAddr[3]),
+			Src:      net.IPv4(socketAddr[0], socketAddr[1], socketAddr[2], socketAddr[3]),
+		}
+		out, err := h.Marshal()
+		if err != nil {
+			fmt.Println(err)
+		}
+		packet := append(out, dataWithHeader...)
 		// Send a single null byte UDP packet
-		syscall.Sendto(sendSocket, []byte{0x0}, 0, &syscall.SockaddrInet4{Port: options.Port(), Addr: destAddr})
+		syscall.Sendto(sendSocket, packet, 0, &syscall.SockaddrInet4{Addr: destAddr})
 
 		var p = make([]byte, options.PacketSize())
 		n, from, err := syscall.Recvfrom(recvSocket, p, 0)
